@@ -1,4 +1,4 @@
-#!/cluster/miniconda/envs/py27/bin/python
+#!/opt/anaconda3/envs/py27/bin/python
 import numpy as np
 from pandas import *
 import os, sys, subprocess, time, json
@@ -12,15 +12,25 @@ def getarg():
   traj2kml.py -t daliao -d 20171231 """
   import argparse
   ap = argparse.ArgumentParser()
-  ap.add_argument("-t", "--STNAM", required=True, type=str, help="station name,sep by ,")
+  ap.add_argument("-t", "--STNAM", required=True, type=str, help="station name,sep by ,or Lat,Lon")
   ap.add_argument("-d", "--DATE", required=True, type=str, help="yyyymmddhh")
+  ap.add_argument("-b", "--BACK", required=True, type=str, help="True or False")
   args = vars(ap.parse_args())
-  return [args['STNAM'], args['DATE']]
+  return [args['STNAM'], args['DATE'],args['BACK']]
 
+def str2bool(v):
+    if isinstance(v, bool):
+       return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
 
 def nstnam():
   import json
-  fn = open('/home/backup/data/epa/pys/sta_list.json')
+  fn = open(path+'sta_list.json')
   d_nstnam = json.load(fn)
   d_namnst = {v: k for k, v in d_nstnam.items()}
   return (d_nstnam, d_namnst)
@@ -42,7 +52,7 @@ def beyond(xpp, ypp):
 
 def opendf(pdate):
   ymd = pdate.strftime('%Y%m%d')
-  fname= '/home/backup/data/cwb/e-service/' + ymd[:4] + '/cwb' + ymd + '.csv'
+  fname= path+'../' + ymd[:4] + '/cwb' + ymd + '.csv'
   if not os.path.isfile(fname):
     dfT=DataFrame({})
     sys.exit('no file for '+fname)
@@ -68,19 +78,23 @@ def uvb(r,u,v):
   ub,vb=sum(rr*uu),sum(rr*vv)
   return ub,vb
 
+path='/Users/Data/cwb/e-service/surf_trj/'
 # restore the matrix
 nx, ny, ns = 252, 414, 431
-fnameO = 'R%d_%d_%d.bin' % (ny, nx, ns)
+fnameO = path+'R%d_%d_%d.bin' % (ny, nx, ns)
 with FortranFile(fnameO, 'r') as f:
   R2 = f.read_record(dtype=np.float64)
 R2 = R2.reshape(ny, nx, ns)
-with FortranFile('x_mesh.bin', 'r') as f:
+with FortranFile(path+'x_mesh.bin', 'r') as f:
   x_mesh = list(f.read_record(dtype=np.int64))
-with FortranFile('y_mesh.bin', 'r') as f:
+with FortranFile(path+'y_mesh.bin', 'r') as f:
   y_mesh = list(f.read_record(dtype=np.int64))
 
 (d_nstnam, d_namnst) = nstnam()
-stnam, DATE = getarg()
+stnam, DATE, BACK = getarg()
+BACK=str2bool(BACK)
+BF=-1
+if not BACK:BF=1
 bdate = datetime(int(DATE[:4]), int(DATE[4:6]), int(DATE[6:8]), int(DATE[8:]))
 nam = [i for i in stnam.split(',')]
 if len(nam) > 1:
@@ -112,7 +126,7 @@ else:
   nst = [int(d_namnst[i]) for i in nam]
   # locations of air quality stations
   # read from the EPA web.sprx
-  fname = '/home/backup/data/epa/urlss/sta_ll.csv'
+  fname = path+'sta_ll.csv'
   sta_list = read_csv(fname)
   x0, y0 = [], []
   for s in nst:
@@ -121,7 +135,7 @@ else:
     y0.append(list(sta1['twd_y'])[0])
 
 xp, yp = x0, y0
-dfS = read_csv('/home/backup/data/cwb/e-service/surf_trj/stat_wnd.csv')
+dfS = read_csv(path+'stat_wnd.csv')
 if len(dfS) != ns: sys.exit('ns not right')
 stno = list(dfS.stno)
 pdate = bdate
@@ -129,20 +143,25 @@ df, ymd0 = opendf(pdate)
 if len(df)==0:sys.exit('no cwb data for date of:'+ymd0)
 delt = 15
 s = 0
-o_ymdh,o_time,o_xp,o_yp=[],[],[],[]
+o_ymdh,o_time,o_xp,o_yp,l_xp,l_yp=[],[],[],[],[],[]
 itime=0
 ymdh=int(DATE)
 o_ymdh.append('ymd='+DATE)
 o_time.append('hour='+str(itime))
 o_xp.append(xp[s])
 o_yp.append(yp[s])
+l_xp.append(xp[s])
+l_yp.append(yp[s])
 ns3=int(ns)
 while not beyond(xp[s], yp[s])[0] and len(df)!=0:
   df1 = df.loc[(df.ObsTime == ymdh) & (df.stno.map(lambda x:x in stno))].reset_index(drop=True)
   df1 = df1.drop_duplicates()
   ldf1=len(df1)
   if ldf1 < ns:
-    if pdate > bdate - timedelta(hours=24):
+    next_date= bdate + timedelta(hours=24*BF)
+    boo=pdate>next_date	
+    if not BACK:boo=pdate<next_date
+    if boo:
       ns2 = set(df1.stno)
       miss = set(stno) - set(ns2)
       if len(miss)!=0:
@@ -167,8 +186,10 @@ while not beyond(xp[s], yp[s])[0] and len(df)!=0:
         # ub, vb = sum(R2[iy, ix, :] * u), sum(R2[iy, ix, :] * v)
         ub, vb = uvb(R2[iy, ix, :],u,v)
         ix0, iy0 = ix, iy
-    xp[s], yp[s] = xp[s] - delt * ub, yp[s]-delt * vb
-  pdate = pdate - timedelta(hours=1)
+    xp[s], yp[s] = xp[s]+BF*delt * ub, yp[s]+BF*delt * vb
+    l_xp.append(xp[s])	
+    l_yp.append(yp[s])	
+  pdate = pdate + timedelta(hours=BF)
   ymdh = int(pdate.strftime('%Y%m%d%H'))
   itime+=1
   o_ymdh.append('ymd='+str(ymdh))
@@ -181,5 +202,13 @@ df=DataFrame({'ymdh':o_ymdh,'xp':o_xp,'yp':o_yp,'Hour':o_time})
 col=['xp','yp','Hour','ymdh']
 name='trj_results/'+'trj'+nam[0]+DATE+'.csv'
 df[col].set_index('xp').to_csv(name)
-os.system('csv2kml.py -f '+name+' -n LN -g TWD97')
+
+# output the line segments for each delta_t
+dfL=DataFrame({'TWD97_x':l_xp,'TWD97_y':l_yp})
+dfL.set_index('TWD97_x').to_csv(name.replace('.csv','L.csv'))
+
+#make kml file
+dir='NC'
+if not BACK:dir='RC'
+os.system('csv2kml.py -f '+name+' -n '+dir+' -g TWD97')
 os.system('csv2bln.cs '+name)
